@@ -14,8 +14,9 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/dlclark/regexp2/syntax"
+	"github.com/jviksne/regexp2/syntax"
 )
 
 // Default timeout used when running regexp matches -- "forever"
@@ -355,4 +356,277 @@ func (re *Regexp) GroupNumberFromName(name string) int {
 	}
 
 	return -1
+}
+
+// FindAllStringIndex is the 'All' version of FindStringIndex; it returns a
+// slice of all successive matches of the expression.
+// A return value of nil indicates no match.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+// Regexp equivalent:
+// r, _ := regexp.Compile("p([a-z]+)ch")
+// fmt.Println(r.FindAllStringIndex("peach punch", -1))
+//
+// [[0 5] [6 11]]
+// 
+func (re *Regexp) FindAllStringIndex(s string, n int) [][]int {
+
+	var result [][]int
+
+	if n < 0 {
+		n = len(s) + 1
+	}	
+
+	c := 0
+
+	m, _ := re.FindStringMatch(s);
+
+	// Loop through all matches and append pairs of full match indexes
+	for m != nil && c < n {
+
+		c = c + 1
+
+		groups := m.Groups()
+
+		if len(groups) > 0 {
+			result = append(result, []int{groups[0].Index, groups[0].Index + groups[0].Length})
+		}
+
+		m, _ = re.FindNextMatch(m)
+
+	}
+
+	return result
+
+}
+
+// FindStringIndex returns a two-element slice of integers defining the
+// location of the leftmost match in s of the regular expression. The match
+// itself is at s[loc[0]:loc[1]].
+// A return value of nil indicates no match.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+// Regexp equivalent:
+// r, _ := regexp.Compile("p([a-z]+)ch")
+// fmt.Println(r.FindStringSubmatchIndex("peach punch"))
+//
+// [0 5]
+func (re *Regexp) FindStringIndex(s string) (loc []int) {
+
+	if m, _ := re.FindStringMatch(s); m != nil {
+
+		groups := m.Groups()
+
+		if len(groups) > 0 {
+			return []int{groups[0].Index, groups[0].Index + groups[0].Length}
+		}
+
+	}
+
+	return nil
+}
+
+// FindStringSubmatchIndex returns a slice holding the index pairs
+// identifying the leftmost match of the regular expression in s and the
+// matches, if any, of its subexpressions.
+// A return value of nil indicates no match.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+// Regexp equivalent:
+// r, _ := regexp.Compile("p([a-z]+)ch")
+//
+// [0 5 1 3]
+func (re *Regexp) FindStringSubmatchIndex(s string) []int {
+
+	var result []int
+
+	if m, _ := re.FindStringMatch(s); m != nil {
+
+		for _, g := range m.Groups() {
+
+			result = append(result, g.Index)
+
+			result = append(result, g.Index + g.Length)
+		}
+
+	}
+
+	return result
+}
+
+// FindAllStringSubmatchIndex is the 'All' version of
+// FindStringSubmatchIndex; it returns a slice of all successive matches of
+// the expression.
+// A return value of nil indicates no match.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+// Regexp equivalent:
+// r, _ := regexp.Compile("p([a-z]+)ch")
+// fmt.Println(r.FindAllStringSubmatchIndex("peach punch pinch", -1))
+//
+// [[0 5 1 3] [6 11 7 9] [12 17 13 15]]
+// 
+func (re *Regexp) FindAllStringSubmatchIndex(s string, n int) [][]int {
+
+	var result [][]int
+
+	if n < 0 {
+		n = len(s) + 1
+	}
+
+	m, _ := re.FindStringMatch(s);
+
+	c := 0
+
+	// Loop through all matches and append pairs of full match indexes
+	for m != nil && c < n {
+
+		c = c + 1
+
+		var subres []int
+
+		for _, g := range m.Groups() {
+
+			subres = append(subres, g.Index)
+
+			subres = append(subres, g.Index + g.Length)
+		}
+
+		result = append(result, subres)
+
+		m, _ = re.FindNextMatch(m)
+
+	}
+
+	return result
+
+}
+
+// FindAllSubmatchIndex is the 'All' version of FindSubmatchIndex; it returns
+// a slice of all successive matches of the expression, as defined by the
+// 'All' description in the package comment.
+// A return value of nil indicates no match.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+func (re *Regexp) FindAllSubmatchIndex(b []byte, n int) [][]int {
+	return re.FindAllStringSubmatchIndex(string(b), n)
+}
+
+// ReplaceAllFunc returns a copy of src in which all matches of the
+// Regexp have been replaced by the return value of function repl applied
+// to the matched byte slice. The replacement returned by repl is substituted
+// directly, without using Expand.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+func (re *Regexp) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
+	return re.replaceAll(string(src), func(dst []byte, match []int) []byte {
+		return append(dst, repl(src[match[0]:match[1]])...)
+	})
+}
+
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+// TODO: verify that UTF8 can safely be used here
+//
+func (re *Regexp) replaceAll(src string, repl func(dst []byte, m []int) []byte) []byte {
+	lastMatchEnd := 0 // end position of the most recent match
+	searchPos := 0    // position where we next look for a match
+	var buf []byte
+
+	m, _ := re.FindStringMatch(src);
+	
+	for m != nil {
+
+		a := []int{m.Group.Index, m.Group.Index + m.Group.Length};
+
+		// Copy the unmatched characters before this match.
+		buf = append(buf, src[lastMatchEnd:a[0]]...)
+
+		// Now insert a copy of the replacement string, but not for a
+		// match of the empty string immediately after another match.
+		// (Otherwise, we get double replacement for patterns that
+		// match both empty and nonempty strings.)
+		if a[1] > lastMatchEnd || a[0] == 0 {
+			buf = repl(buf, a)
+		}
+		lastMatchEnd = a[1]
+
+		// Advance past this match; always advance at least one character.
+		var width int
+		_, width = utf8.DecodeRuneInString(src[searchPos:])
+		if searchPos+width > a[1] {
+			searchPos += width
+		} else if searchPos+1 > a[1] {
+			// This clause is only needed at the end of the input
+			// string. In that case, DecodeRuneInString returns width=0.
+			searchPos++
+		} else {
+			searchPos = a[1]
+		}
+
+		m, _ = re.FindNextMatch(m)
+	}
+
+	// Copy the unmatched characters after the last match.	
+	buf = append(buf, src[lastMatchEnd:]...)
+
+	return buf
+}
+
+// QuoteMeta returns a string that escapes all regular expression metacharacters
+// inside the argument text; the returned string is a regular expression matching
+// the literal text.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+// TODO: verify that this quotes all correct characters in regexp2
+func QuoteMeta(s string) string {
+	// A byte loop is correct because all metacharacters are ASCII.
+	var i int
+	for i = 0; i < len(s); i++ {
+		if special(s[i]) {
+			break
+		}
+	}
+	// No meta characters found, so return original string.
+	if i >= len(s) {
+		return s
+	}
+
+	b := make([]byte, 2*len(s)-i)
+	copy(b, s[:i])
+	j := i
+	for ; i < len(s); i++ {
+		if special(s[i]) {
+			b[j] = '\\'
+			j++
+		}
+		b[j] = s[i]
+		j++
+	}
+	return string(b[:j])
+}
+
+
+// Bitmap used by func special to check whether a character needs to be escaped.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+var specialBytes [16]byte
+
+// special reports whether byte b needs to be escaped by QuoteMeta.
+//
+// Ported from https://golang.org/src/regexp/regexp.go
+//
+// TODO: verify that UTF8 can safely be used here
+//
+func special(b byte) bool {
+	return b < utf8.RuneSelf && specialBytes[b%16]&(1<<(b/16)) != 0
 }
